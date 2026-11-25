@@ -3772,7 +3772,7 @@ function fixPages(list) {
    - 同じページを両方で直したときは、新しいほうを残し、古いほうは「（ぶつかった版）」のページとして残す */
 const SYNC_FULL = location.protocol === 'file:' || /[?&]full\b/.test(location.search);
 const SYNC_BODY_KEYS = new Set(['html', 'cover', 'sv']);
-const SYNC_DROP = new Set(['t', 'th', 'r', 'f', 'del', 'keepBody']);
+const SYNC_DROP = new Set(['t', 'th', 'r', 'f', 'h', 'del', 'keepBody']);
 let sync = null, syncBusy = false, syncTimer = 0, syncAgain = false, syncErr = '', syncProg = '';
 function syncReady() { return !!(sync && store.db && !twoTabs) }
 function syncSave() { if (store.db && sync) store.set('sync', sync).catch(() => {}) }
@@ -3799,9 +3799,12 @@ async function syncApi(body) {
   const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 330000);
   try {
     const r = await fetch(sync.url, {method: 'POST', body: JSON.stringify({...body, key: sync.key}), signal: ctl.signal, redirect: 'follow'});
-    const j = await r.json();
+    const j = await r.json().catch(() => null);
     if (!j || !j.ok) throw Error(j && j.error === 'key' ? '合言葉がちがいます' : (j && j.error) || 'ドライブから返事がありません');
     return j;
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw Error('ドライブの返事がおそすぎました（少ししたら続きから送ります）');
+    throw e;
   } finally { clearTimeout(t) }
 }
 /* ドライブの見出しに入れる、カード用の小さなサムネ（横240px） */
@@ -3844,7 +3847,7 @@ async function syncPush(stale) {
   let i = 0, done = 0;
   while (i < ids.length || dels.length || sync.orderDirty || sync.tagsDirty) {
     const batch = [], sent = new Map(), fixed = []; let size = 0;
-    while (i < ids.length && batch.length < 60 && (size < 4e6 || !batch.length)) {
+    while (i < ids.length && batch.length < 40 && (size < 4e6 || !batch.length)) {
       const id = ids[i++], p = byId(id);
       if (!p) { sent.set(id, undefined); continue }
       if (!p.sv) { p.sv = p.updated || Date.now(); fixed.push(p) }   // 保存済みの写しにも入れる（入れないと、次に保存したとき全部「直した」あつかいになる）
@@ -3870,12 +3873,14 @@ async function syncPush(stale) {
     syncProg = `同期：送っています ${done} / ${ids.length + Object.keys(sync.dels).length}`; syncShow();
     const r = await syncApi(body);
     (r.stale || []).forEach(id => stale.add(id));
+    (r.later || []).forEach(id => sent.delete(id));   // 受付係の時間切れで受け取れなかったもの：「送るもの」に残して次に送る
     sent.forEach((sv, id) => { const p = byId(id); if (!p || p.sv === sv) delete sync.dirty[id] });   // 送っているあいだに直したものは、もう一度送る
     dl.forEach(d => { if (sync.dels[d.id] === d.sv) delete sync.dels[d.id] });
     if (body.order && sync.orderSv === orderSv) sync.orderDirty = 0;
     if (body.tags && sync.tagsSv === tagsSv) sync.tagsDirty = 0;
-    done += batch.length + dl.length;
+    done += batch.length + dl.length - (r.later || []).length;
     syncSave();
+    if ((r.later || []).length) break;   // のこりは次の回に（受付係を休ませる）
   }
 }
 async function syncPull() {
