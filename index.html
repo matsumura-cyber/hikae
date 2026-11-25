@@ -3843,11 +3843,11 @@ async function syncPush(stale) {
   const ids = Object.keys(sync.dirty), dels = Object.entries(sync.dels);
   let i = 0, done = 0;
   while (i < ids.length || dels.length || sync.orderDirty || sync.tagsDirty) {
-    const batch = [], sent = new Map(); let size = 0;
+    const batch = [], sent = new Map(), fixed = []; let size = 0;
     while (i < ids.length && batch.length < 60 && (size < 4e6 || !batch.length)) {
       const id = ids[i++], p = byId(id);
       if (!p) { sent.set(id, undefined); continue }
-      if (!p.sv) p.sv = p.updated || Date.now();
+      if (!p.sv) { p.sv = p.updated || Date.now(); fixed.push(p) }   // 保存済みの写しにも入れる（入れないと、次に保存したとき全部「直した」あつかいになる）
       const meta = {};
       for (const k in p) if (!SYNC_BODY_KEYS.has(k) && k[0] !== '_') meta[k] = p[k];
       const item = {id, sv: p.sv, meta};
@@ -3861,6 +3861,7 @@ async function syncPush(stale) {
       if (n > 45e6) { sent.set(id, p.sv); toast(`「${pageTitle(p)}」は大きすぎてドライブに送れませんでした（画像を減らしてください）`, null, 10000); continue }
       size += n; batch.push(item); sent.set(id, p.sv);
     }
+    if (fixed.length) await syncWriteLocal(fixed, [], false);
     const dl = dels.splice(0, 300).map(([id, sv]) => ({id, sv}));
     const body = {op: 'push', pages: batch, dels: dl};
     if (sync.orderDirty) body.order = {list: pages.map(p => p.id), sv: sync.orderSv};
