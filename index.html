@@ -805,7 +805,7 @@ body.has-bsel #editor{caret-color:transparent}
           <div id="folderIcon">📁</div>
           <h1 id="folderTitle" spellcheck="false"></h1>
           <div id="folderMeta"></div>
-          <div id="folderActions"><button id="fvNewPage">＋ 新しいページ</button><button id="fvNewFolder">📁 新しいフォルダ</button><button id="tvRename" hidden>名前を変える</button><button id="tvColor" hidden>色</button><button id="tvDelete" hidden>削除</button><button id="fvSelect" title="カードを選んで、まとめてタグ付け・移動">☑ 選ぶ</button><button id="fvView" title="カードと表の表示を切りかえる">▦ 表</button></div>
+          <div id="folderActions"><button id="fvNewPage">＋ 新しいページ</button><button id="fvNewFolder">📁 新しいフォルダ</button><button id="tvRename" hidden>名前を変える</button><button id="tvColor" hidden>色</button><button id="tvDelete" hidden>削除</button><button id="fvSort" title="カードの並べ方（名前・作成日・更新日など）">↕ 並べ替え</button><button id="fvSelect" title="カードを選んで、まとめてタグ付け・移動">☑ 選ぶ</button><button id="fvView" title="カードと表の表示を切りかえる">▦ 表</button></div>
           <div id="tagFilter"></div>
         </div>
         <div id="folderGrid"></div>
@@ -1347,7 +1347,7 @@ function folderCard(x, hl = []) {
 }
 function setFolderButtons(mode) {
   const single = mode === 'tag' && Array.isArray(tagMode) && tagMode.length === 1;
-  $('fvNewPage').hidden = $('fvNewFolder').hidden = mode !== 'folder';
+  $('fvNewPage').hidden = $('fvNewFolder').hidden = $('fvSort').hidden = mode !== 'folder';
   $('tvRename').hidden = $('tvColor').hidden = $('tvDelete').hidden = !single;
   $('fvSelect').hidden = mode === 'all';
   $('fvSelect').classList.toggle('on', selMode);
@@ -1603,6 +1603,26 @@ function tvDelCol(f, c) {
   if (f.hide) { f.hide = f.hide.filter(k => k !== c.k); if (!f.hide.length) delete f.hide }
   persist(); renderFolderView();
 }
+/* フォルダの並べ替え（表とカードで共通。f.sort = {k:列, dir:1 上がる順 / -1 下がる順}。なければ並べた順） */
+function sortRows(f, rows, all) {
+  const sort = f.sort && all.find(c => c.k === f.sort.k), dir = f.sort && f.sort.dir < 0 ? -1 : 1;
+  if (!sort) return rows;
+  const coll = new Intl.Collator('ja', {numeric: true, sensitivity: 'base'});
+  return rows.map((x, i) => ({x, i, k: tvKey(tvVal(x, sort), sort)})).sort((A, B) => {
+    if (A.k === null || B.k === null) return A.k === B.k ? A.i - B.i : A.k === null ? 1 : -1;   // 空っぽは、いつもいちばん下
+    const r = typeof A.k === 'number' && typeof B.k === 'number' ? A.k - B.k : coll.compare(String(A.k), String(B.k));
+    return r * dir || A.i - B.i;
+  }).map(A => A.x);
+}
+function sortLabel(c, dir) { return c.t === 'date' ? (dir < 0 ? '新しい順' : '古い順') : c.t === 'number' ? (dir < 0 ? '大きい順' : '小さい順') : (dir < 0 ? '逆の順' : 'あいうえお順') }
+function openSortMenu(btn) {
+  const f = byId(folderMode); if (!f) return;
+  const all = tvCols(f, kidsOf(f.id)).filter(c => c.t !== 'tags');
+  const set = s => { if (s) f.sort = s; else delete f.sort; persist(); renderFolderView() };
+  const items = [{icon:'✋', label:'並べた順（ドラッグで動かせる）', on: !f.sort, run: () => set(null)}, {sep:true}];
+  all.forEach(c => (c.t === 'date' || c.t === 'number' ? [-1, 1] : [1, -1]).forEach(d => items.push({icon: d < 0 ? '↓' : '↑', label: `${c.n}：${sortLabel(c, d)}`, on: !!f.sort && f.sort.k === c.k && (f.sort.dir < 0 ? -1 : 1) === d, run: () => set({k: c.k, dir: d})})));
+  showMenu(btn.getBoundingClientRect(), items);
+}
 function renderTableView(f, items) {
   const st = tvOf(f.id), all = tvCols(f, items), hidden = new Set(f.hide || []), g = $('folderGrid');
   const cols = all.filter(c => c.k === 'title' || !hidden.has(c.k));
@@ -1621,14 +1641,7 @@ function renderTableView(f, items) {
     return !q || all.some(c => tvText(tvVal(x, c), c).toLowerCase().includes(q));
   });
   const sort = f.sort && all.find(c => c.k === f.sort.k), dir = f.sort && f.sort.dir < 0 ? -1 : 1;
-  if (sort) {
-    const coll = new Intl.Collator('ja', {numeric: true, sensitivity: 'base'});
-    rows = rows.map((x, i) => ({x, i, k: tvKey(tvVal(x, sort), sort)})).sort((A, B) => {
-      if (A.k === null || B.k === null) return A.k === B.k ? A.i - B.i : A.k === null ? 1 : -1;   // 空っぽは、いつもいちばん下
-      const r = typeof A.k === 'number' && typeof B.k === 'number' ? A.k - B.k : coll.compare(String(A.k), String(B.k));
-      return r * dir || A.i - B.i;
-    }).map(A => A.x);
-  }
+  rows = sortRows(f, rows, all);
   const shownFolders = q || st.f.length ? [] : folders;
   /* 上の帯：さがす欄＋しぼりこみ中の条件＋かくした列 */
   const qi = h('input', {class:'tv-q', type:'search', placeholder:'この表をさがす…'}); qi.value = st.q;
@@ -1772,8 +1785,12 @@ function renderFolderView() {
   const asTable = f.view === 'table';
   $('fvView').hidden = false; $('fvView').textContent = asTable ? '▤ カード' : '▦ 表';
   $('fvSelect').hidden = asTable;
+  const allCols = tvCols(f, items), sc = f.sort && allCols.find(c => c.k === f.sort.k);
+  $('fvSort').hidden = false; $('fvSort').textContent = sc ? `↕ ${sc.n}：${sortLabel(sc, f.sort.dir < 0 ? -1 : 1)}` : '↕ 並べ替え';
+  $('fvSort').classList.toggle('on', !!sc);
   if (asTable) { renderTableView(f, items); return }
-  const g = $('folderGrid'); g.classList.remove('as-table'); g.replaceChildren(...items.map(x => folderCard(x)));
+  const shown = [...items.filter(isFolder), ...sortRows(f, items.filter(x => !isFolder(x)), allCols)];
+  const g = $('folderGrid'); g.classList.remove('as-table'); g.replaceChildren(...shown.map(x => folderCard(x)));
   if (!items.length) g.append(h('p', {class:'fv-empty', text:'このフォルダは空です。「＋ 新しいページ」で作るか、左の一覧からページをドラッグして入れてください。'}));
 }
 $('folderTitle').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.currentTarget.blur() } else if (e.key === 'Escape') { e.currentTarget.textContent = pageTitle(byId(folderMode)); e.currentTarget.blur() } });
@@ -1783,6 +1800,7 @@ $('folderTitle').addEventListener('blur', e => {
   if (v !== (f.title || '') && v !== pageTitle(f)) { f.title = v; f.updated = Date.now(); persist() }
   renderSidebar(); updateCrumb(); renderFolderView();
 });
+$('fvSort').onclick = e => openSortMenu(e.currentTarget);
 $('fvNewPage').onclick = () => { if (folderMode) createPage(folderMode) };
 $('fvNewFolder').onclick = () => { if (folderMode) createFolder(folderMode) };
 /* カード表示：ドラッグで並べ替え（左右のどちらに置くかで前・後ろ）。フォルダのカードのまん中に落とすと、その中へ。
@@ -1807,6 +1825,8 @@ $('fvNewFolder').onclick = () => { if (folderMode) createFolder(folderMode) };
     if (isFolder(t)) pos = !isFolder(d) || (x > .25 && x < .75) ? 'inside' : x < .5 ? 'before' : 'after';
     else if (isFolder(d)) return;   // フォルダは、ページの間には置けない（フォルダは前にまとめて出るため）
     else pos = x < .5 ? 'before' : 'after';
+    const ff = byId(folderMode);
+    if (pos !== 'inside' && ff && ff.sort) return;   // 並べ替え中は、前後には置けない（フォルダの中へ入れるのはできる）
     e.preventDefault(); e.dataTransfer.dropEffect = 'move';
     c.classList.add('cd-' + pos); cardDrop = {id: t.id, pos};
   });
@@ -4159,6 +4179,13 @@ setInterval(() => { if (document.visibilityState === 'visible') syncSoon(0) }, S
   }
   if (ui.collapsed && !isMobile()) document.body.classList.add('side-collapsed');
   if (!store.db) setStatus('この端末に保存');
+  /* 1回だけ：ウェブ検索サムネで入れていた「🔎 リンク」の行を消す（PC だけ。スマホは同期で届く） */
+  if (SYNC_FULL && store.db && !(await store.get('cleanedSearchLink').catch(() => 0))) {
+    const re = /<p>🔎 <a [^>]*>[^<]*<\/a><\/p>/g; let n = 0;
+    pages.forEach(p => { if (p.html && p.html.includes('🔎 <a')) { const t = p.html.replace(re, ''); if (t !== p.html) { p.html = t; n++ } } });
+    if (n) { persist(); toast(`ウェブ検索サムネの「🔎 リンク」を ${n} ページから消しました（絵はそのまま）`, null, 8000) }
+    store.set('cleanedSearchLink', 1).catch(() => {});
+  }
   syncShow();
   if (fromQr) {
     try { await syncConnect(fromQr.u, fromQr.k); toast('ドライブとつながりました。ノートを読みこんでいます…', null, 8000) }
@@ -4380,8 +4407,7 @@ async function addSearchThumbs(ids) {
         before.push({p, html: p.html, updated: p.updated});
         let body = p.html || '';
         if (/^\s*(<p>\s*(<br\s*\/?>)?\s*<\/p>\s*)*$/i.test(body)) body = '';
-        const src = isHttp(u) ? `<p>🔎 <a href="${esc(u)}">${esc(readableUrl(u))}</a></p>` : '';   // サムネをどこから持ってきたか（ちがっていたら消してください）
-        p.html = `<p><img src="${thumb}"></p>` + src + body;
+        p.html = `<p><img src="${thumb}"></p>` + body;   // 絵だけ（どこから持ってきたかのリンクは入れない）
         p.updated = Date.now(); ok++; any = true;
       });
       if (any) {
