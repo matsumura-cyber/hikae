@@ -2894,10 +2894,16 @@ async function fileToDataUrl(file, max = 2000) {
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   return c.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', .88);
 }
+const IMG_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
+const isImageFile = f => f && (f.type.startsWith('image/') || (!f.type && IMG_EXT.test(f.name || '')));
 async function insertImages(files, ref) {
   for (const f of files) {
-    if (!f.type.startsWith('image/')) continue;
-    let url; try { url = await fileToDataUrl(f) } catch { toast('画像を読み込めませんでした'); continue }
+    let url;
+    if (f.src) url = f.src;   // 読めなかったウェブの画像は、アドレスのまま
+    else {
+      if (!isImageFile(f)) continue;
+      try { url = await fileToDataUrl(f) } catch { toast('画像を読み込めませんでした'); continue }
+    }
     const p = document.createElement('p'), img = new Image(); img.alt = ''; img.src = url; p.append(img);
     if (ref && editor.contains(ref) && ref.tagName === 'P' && isEmptyBlock(ref)) ref.replaceWith(p);
     else if (ref && editor.contains(ref)) ref.after(p);
@@ -2907,7 +2913,34 @@ async function insertImages(files, ref) {
   if (ref && editor.contains(ref)) { let next = ref.nextElementSibling; if (!next || !(next.tagName === 'P' && isEmptyBlock(next))) { next = mkP(); ref.after(next) } afterStructure(); placeCaret(next) }
 }
 $('imageFile').onchange = e => { const files = [...e.target.files]; e.target.value = ''; insertImages(files, pendingImageRef || lastBlock); pendingImageRef = null };
-editor.addEventListener('dragover', e => { if (dragId || [...e.dataTransfer.types].includes('Files')) e.preventDefault() });
+/* ドロップで画像を貼る：PC の画像ファイル、またはブラウザのほかのタブからドラッグした画像。
+   ページの外（タイトルや余白）に落としても、ページのいちばん下に貼る（ブラウザで画像が開いてしまわないように） */
+let innerDrag = false;   // ヒカエの中から始めたドラッグ（文字の移動など）は、ふつうに動かす
+document.addEventListener('dragstart', () => { innerDrag = true }, true);
+document.addEventListener('dragend', () => { innerDrag = false }, true);
+function dropImages(dt) {
+  const files = [...(dt.files || [])].filter(isImageFile);
+  if (files.length) return {files};
+  if (innerDrag) return null;
+  const html = dt.getData('text/html') || '', m = /<img[^>]+src=["']([^"']+)["']/i.exec(html);
+  let u = m ? m[1].replace(/&amp;/g, '&') : '';
+  if (!u) { const l = (dt.getData('text/uri-list') || '').split(/\r?\n/).find(x => x && x[0] !== '#') || ''; if (IMG_EXT.test(l.split(/[?#]/)[0])) u = l }
+  return /^(https?:|data:image\/)/.test(u) ? {url: u} : null;
+}
+async function urlToImage(u) {
+  try {
+    const r = await fetch(u, {mode: 'cors'});
+    if (r.ok) { const b = await r.blob(); if (b.type.startsWith('image/')) return new File([b], 'image', {type: b.type}) }
+  } catch {}
+  return {src: u};   // 読めないとき（サイトがゆるしていない）は、アドレスのまま貼る
+}
+async function pasteDropped(d, ref) {
+  const list = d.files || [await urlToImage(d.url)];
+  await insertImages(list, ref);
+  if (list.some(x => x.src)) toast('この画像はサイトの都合で取りこめなかったので、画像のアドレスで貼りました（元のサイトで消えると見えなくなります）', null, 9000);
+}
+const hasDropStuff = dt => { const t = [...dt.types]; return t.includes('Files') || (!innerDrag && (t.includes('text/uri-list') || t.includes('text/html'))) };
+editor.addEventListener('dragover', e => { if (dragId || hasDropStuff(e.dataTransfer)) e.preventDefault() });
 editor.addEventListener('drop', e => {
   const target = blockOf(document.elementFromPoint(e.clientX, e.clientY)) || editor.lastElementChild;
   if (dragId) {
@@ -2917,8 +2950,26 @@ editor.addEventListener('drop', e => {
     if (target && target.tagName === 'P' && isEmptyBlock(target)) target.replaceWith(link); else if (target) target.after(link); else editor.append(link);
     afterStructure(); return;
   }
-  const files = [...(e.dataTransfer.files || [])].filter(f => f.type.startsWith('image/'));
-  if (files.length) { e.preventDefault(); insertImages(files, target) }
+  if (!editor.isContentEditable) return;
+  const d = dropImages(e.dataTransfer);
+  if (d) { e.preventDefault(); pasteDropped(d, target) }
+});
+/* エディタの外に落としたとき */
+document.addEventListener('dragover', e => { if (!dragId && hasDropStuff(e.dataTransfer)) e.preventDefault() });
+document.addEventListener('drop', e => {
+  if (e.defaultPrevented || dragId) return;
+  const dt = e.dataTransfer, d = dropImages(dt);
+  if ([...dt.types].includes('Files')) e.preventDefault();   // 画像以外のファイルも、ブラウザで開かせない
+  if (!d) return;
+  e.preventDefault();
+  if (folderMode && !tagMode) {   // フォルダを開いているとき：画像の入った新しいページを作る
+    const name = d.files ? d.files[0].name.replace(/\.[^.]+$/, '') : '';
+    const p = createPage(folderMode); p.title = name; titleEl.textContent = name;
+    pasteDropped(d, editor.firstElementChild).then(() => { save(); renderSidebar() });
+    return;
+  }
+  if (!selected() || galleryMode || tagMode || !editor.isContentEditable) { toast('画像は、ページを開いてからドロップしてください'); return }
+  pasteDropped(d, editor.lastElementChild);
 });
 
 /* ---------- 文字を選んだときのツールバー ---------- */
