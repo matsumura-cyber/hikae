@@ -3883,13 +3883,15 @@ async function syncPush(stale) {
     if ((r.later || []).length) break;   // のこりは次の回に（受付係を休ませる）
   }
 }
-async function syncPull() {
+async function syncPull(partial) {
   const r = await syncApi({op: 'pull', since: sync.rev || 0});
   const put = [], del = [];
-  let orderChanged = false;
+  let orderChanged = false, skipR = Infinity;
   for (const m of r.pages || []) {
     if (!m || typeof m.id !== 'string') continue;
     const local = byId(m.id);
+    /* 送るのに失敗したとき：まだ送れていないページはさわらない（あとで送ってから、ぶつかったかどうか見る） */
+    if (partial && (sync.dirty[m.id] || sync.dels[m.id])) { skipR = Math.min(skipR, m.r || 0); continue }
     if (sync.dirty[m.id] && local && (local.sv || 0) >= m.sv) continue;          // こちらの方が新しい（あとで送る）
     if (sync.dels[m.id] && sync.dels[m.id] >= m.sv) continue;                     // こちらで消した
     if (m.del) {
@@ -3918,7 +3920,7 @@ async function syncPull() {
   /* 親がまだ来ていないページは、とりあえずいちばん上に */
   pages.forEach(p => { if (p.parent && !byId(p.parent)) p.parent = null });
   await syncWriteLocal(put, del, orderChanged);
-  sync.rev = r.rev; syncSave();
+  sync.rev = skipR === Infinity ? r.rev : Math.max(sync.rev || 0, Math.min(r.rev, skipR - 1)); sync.lastPull = Date.now(); syncSave();
   return put.length + del.length;
 }
 /* 本文を読む（PC はぜんぶ、スマホは開いたページだけ） */
@@ -3952,7 +3954,17 @@ async function syncNow() {
   try {
     if (document.activeElement === editor || document.activeElement === titleEl) save();
     const stale = new Set(), mine = new Map();
-    await syncPush(stale);
+    try { await syncPush(stale) }
+    catch (e) {
+      /* 送るのに失敗しても、ほかの端末で書いたものは受け取る（送り終わるまで受け取れないと、スマホの入力が PC に来ない） */
+      try {
+        const n = await syncPull(true);
+        const need = pages.filter(p => p._lazy && (SYNC_FULL || p.id === current)).map(p => p.id);
+        if (need.length) await syncFetchBodies(need);
+        if (n) { renderSidebar(); if (folderMode || tagMode || galleryMode) renderPage(); else if (selected() && document.activeElement !== editor && document.activeElement !== titleEl) renderPage() }
+      } catch (e2) { console.error(e2) }
+      throw e;
+    }
     stale.forEach(id => { const p = byId(id); if (p && !isFolder(p) && !p._lazy) mine.set(id, copyPage(p)) });
     const n = await syncPull();
     const need = pages.filter(p => p._lazy && (SYNC_FULL || mine.has(p.id) || p.id === current)).map(p => p.id);
@@ -4040,7 +4052,7 @@ function renderSyncModal() {
   }
   const last = sync.last ? fmtFull(sync.last) : 'まだ';
   box.append(h('p', {class: 'sy-state', text: syncErr ? '⚠ ' + syncErr : syncBusy ? (syncProg || 'そろえています…') : syncPending() ? `送るのこり ${syncPending()} 件` : 'ドライブとそろっています'}),
-    h('p', {class: 'sy-note', text: `最後にそろえた時刻：${last}`}));
+    h('p', {class: 'sy-note', text: `最後にそろえた時刻：${last}　／　ほかの端末の分を最後に受け取った時刻：${sync.lastPull ? fmtFull(sync.lastPull) : 'まだ'}`}));
   const now = h('button', {class: 'sy-btn main', text: '今すぐそろえる'}); now.onclick = () => { syncErr = ''; syncNow() };
   const acts = h('div', {class: 'sy-acts'}, now);
   if (SYNC_FULL) {
